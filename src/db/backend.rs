@@ -33,6 +33,13 @@ pub enum Backend {
 
     #[serde(rename = "canopydb")]
     Canopydb,
+
+    #[serde(rename = "onda_lsm")]
+    #[serde(alias = "onda")]
+    OndaLsm,
+
+    #[serde(rename = "onda_btree")]
+    OndaBtree,
 }
 
 impl std::fmt::Display for Backend {
@@ -48,7 +55,7 @@ impl std::fmt::Display for Backend {
 
                 Self::Fjall2 => "fjall 2.11.2",
 
-                Self::Fjall3 => "fjall 3.1.2",
+                Self::Fjall3 => "fjall 3.1.6",
 
                 Self::Redb => "redb 3.1.0",
 
@@ -59,6 +66,10 @@ impl std::fmt::Display for Backend {
                 Self::RocksDb => "rust_rocksdb 0.44.2",
 
                 Self::Canopydb => "canopydb 0.2.4",
+
+                Self::OndaLsm => "ondadb 0.2.0 (LSM)",
+
+                Self::OndaBtree => "ondadb 0.2.0 (B-tree)",
             }
         )
     }

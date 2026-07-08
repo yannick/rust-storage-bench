@@ -408,6 +408,37 @@ impl DatabaseBuilder {
 
                 GenericDatabase::Canopydb(Arc::new(db))
             }
+
+            Backend::OndaLsm | Backend::OndaBtree => {
+                use ondadb::{ColumnFamilyConfig, Compression, Options, SyncMode, DB};
+
+                std::fs::create_dir_all(&path).unwrap();
+
+                let db = DB::open(Options::new(path.as_ref().to_string_lossy().into_owned()))
+                    .expect("open ondadb");
+
+                let cfg = ColumnFamilyConfig {
+                    use_btree: matches!(args.backend, Backend::OndaBtree),
+                    compression: match args.compression {
+                        crate::args::Compression::None => Compression::None,
+                        crate::args::Compression::Lz4 => Compression::Lz4,
+                    },
+                    sync_mode: if args.fsync {
+                        SyncMode::Full
+                    } else {
+                        SyncMode::None
+                    },
+                    write_buffer_size: args.lsm_write_buffer_bytes as usize,
+                    ..Default::default()
+                };
+
+                let cf = db.create_column_family("default", cfg).expect("create cf");
+
+                GenericDatabase::Onda {
+                    db: Arc::new(db),
+                    cf,
+                }
+            }
         };
 
         DatabaseWrapper {

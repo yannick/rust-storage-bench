@@ -53,6 +53,11 @@ pub enum GenericDatabase {
 
     Canopydb(Arc<canopydb::Database>),
 
+    Onda {
+        db: Arc<ondadb::DB>,
+        cf: Arc<ondadb::ColumnFamily>,
+    },
+
     #[cfg(feature = "heed")]
     Heed {
         db: heed::Database<heed::types::Bytes, heed::types::Bytes>,
@@ -215,6 +220,10 @@ impl DatabaseWrapper {
                     .unwrap()
                     .map(|(k, v)| (k.to_vec(), v.to_vec()))
             }
+            GenericDatabase::Onda { db, cf } => {
+                onda_scan(db, cf, range, false, 1).into_iter().next()
+            }
+
             #[cfg(feature = "rocksdb")]
             GenericDatabase::RocksDb { db, .. } => rocksdb_range(range, false, db)
                 .next()
@@ -385,6 +394,21 @@ impl DatabaseWrapper {
                 }
             }
 
+            GenericDatabase::Onda { db, cf } => {
+                let upper = get_upper_bound(prefix);
+                let range: (Bound<&[u8]>, Bound<&[u8]>) = (
+                    Bound::Included(prefix),
+                    upper
+                        .as_ref()
+                        .map_or(Bound::Unbounded, |b| Bound::Excluded(b.as_slice())),
+                );
+                let items = onda_scan(db, cf, range, rev, take);
+                for (k, v) in &items {
+                    sum_bytes += k.len() + v.len();
+                }
+                items
+            }
+
             _ => unimplemented!(),
         };
 
@@ -535,6 +559,14 @@ impl DatabaseWrapper {
                         })
                         .count()
                 }
+            }
+
+            GenericDatabase::Onda { .. } => {
+                let upper_bound = get_upper_bound(prefix);
+                let upper_bound = upper_bound
+                    .as_ref()
+                    .map_or(Bound::Unbounded, |b| Bound::Excluded(b.as_slice()));
+                return self.range_len((Bound::Included(prefix), upper_bound), rev, take);
             }
         };
 
@@ -719,6 +751,14 @@ impl DatabaseWrapper {
                         })
                         .count()
                 }
+            }
+
+            GenericDatabase::Onda { db, cf } => {
+                let items = onda_scan(db, cf, range, rev, take);
+                for (k, v) in &items {
+                    sum_bytes += k.len() + v.len();
+                }
+                items.len()
             }
         };
 
@@ -1308,6 +1348,16 @@ impl DatabaseWrapper {
                 report_latency();
                 value.map(|x| x.to_vec())
             }
+
+            GenericDatabase::Onda { db, cf } => {
+                let value = match db.get(cf, key) {
+                    Ok(v) => Some(v),
+                    Err(ondadb::OndaError::NotFound) => None,
+                    Err(e) => panic!("ondadb get failed: {e:?}"),
+                };
+                report_latency();
+                value
+            }
         };
         self.point_read_bytes.fetch_add(
             key.len() as u64 + item.as_ref().map_or(0, |v| v.len() as u64),
@@ -1432,6 +1482,26 @@ impl DatabaseWrapper {
                     }
                 }
                 write_txn.commit().unwrap();
+            }
+
+            GenericDatabase::Onda { db, cf } => {
+                let mut txn = db.begin();
+                let mut batch = 0u32;
+                for (key, value) in items {
+                    txn.put(cf, &key, &value, std::time::Duration::ZERO)
+                        .unwrap();
+
+                    count += 1;
+                    bytes_written += key.len() + value.len();
+
+                    batch += 1;
+                    if batch >= 1_000 {
+                        txn.commit().unwrap();
+                        txn = db.begin();
+                        batch = 0;
+                    }
+                }
+                txn.commit().unwrap();
             }
         }
 
@@ -1572,6 +1642,24 @@ impl DatabaseWrapper {
                 }
                 write_txn.commit().unwrap();
             }
+
+            GenericDatabase::Onda { db, cf } => {
+                let mut txn = db.begin();
+                let mut batch = 0u32;
+                for (key, value) in items {
+                    txn.put(cf, &key, &value, std::time::Duration::ZERO)
+                        .unwrap();
+                    on_bytes_written(&key, &value);
+
+                    batch += 1;
+                    if batch >= 1_000 {
+                        txn.commit().unwrap();
+                        txn = db.begin();
+                        batch = 0;
+                    }
+                }
+                txn.commit().unwrap();
+            }
         }
 
         log::info!("Ingested {count} initial items in {:?}", start.elapsed());
@@ -1690,6 +1778,14 @@ impl DatabaseWrapper {
                     tree.insert(key, value).unwrap();
                 }
                 write_txn.commit_with(durable).unwrap();
+            }
+
+            GenericDatabase::Onda { db, cf } => {
+                db.put(cf, key, value, std::time::Duration::ZERO).unwrap();
+
+                if durable {
+                    db.sync_wal().unwrap();
+                }
             }
         }
 
@@ -1826,6 +1922,14 @@ impl DatabaseWrapper {
                 }
                 write_txn.commit_with(durable).unwrap();
             }
+
+            GenericDatabase::Onda { db, cf } => {
+                db.delete(cf, key).unwrap();
+
+                if durable {
+                    db.sync_wal().unwrap();
+                }
+            }
         }
 
         if let Some(decrement_workload_size) = decrement_workload_size {
@@ -1843,6 +1947,72 @@ impl DatabaseWrapper {
         self.delete_ops
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// Collect up to `take` entries from an ondaDB column family within `range`,
+/// forward or reversed. Byte comparisons match ondaDB's default `memcmp`
+/// comparator (lexicographic), so bound checks use plain slice ordering.
+fn onda_scan(
+    db: &ondadb::DB,
+    cf: &Arc<ondadb::ColumnFamily>,
+    range: (Bound<&[u8]>, Bound<&[u8]>),
+    rev: bool,
+    take: usize,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let (lo, hi) = range;
+    let txn = db.begin();
+    let mut it = txn.new_iterator(cf);
+    let mut out = Vec::new();
+
+    if !rev {
+        match lo {
+            Bound::Unbounded => it.seek_to_first(),
+            Bound::Included(k) => it.seek(k),
+            Bound::Excluded(k) => {
+                it.seek(k);
+                if it.valid() && it.key() == k {
+                    it.next();
+                }
+            }
+        }
+        while it.valid() && out.len() < take {
+            let stop = match hi {
+                Bound::Unbounded => false,
+                Bound::Included(h) => it.key() > h,
+                Bound::Excluded(h) => it.key() >= h,
+            };
+            if stop {
+                break;
+            }
+            out.push((it.key().to_vec(), it.value().to_vec()));
+            it.next();
+        }
+    } else {
+        match hi {
+            Bound::Unbounded => it.seek_to_last(),
+            Bound::Included(k) => it.seek_for_prev(k),
+            Bound::Excluded(k) => {
+                it.seek_for_prev(k);
+                if it.valid() && it.key() == k {
+                    it.prev();
+                }
+            }
+        }
+        while it.valid() && out.len() < take {
+            let stop = match lo {
+                Bound::Unbounded => false,
+                Bound::Included(l) => it.key() < l,
+                Bound::Excluded(l) => it.key() <= l,
+            };
+            if stop {
+                break;
+            }
+            out.push((it.key().to_vec(), it.value().to_vec()));
+            it.prev();
+        }
+    }
+
+    out
 }
 
 #[cfg(feature = "rocksdb")]
