@@ -1961,7 +1961,9 @@ fn onda_scan(
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
     let (lo, hi) = range;
     let txn = db.begin();
-    let mut it = txn.new_iterator(cf);
+    // Declared bounds let ondadb prune non-overlapping SSTables at iterator
+    // construction and terminate at the range end.
+    let mut it = txn.new_iterator_bounded(cf, lo, hi);
     let mut out = Vec::new();
 
     if !rev {
