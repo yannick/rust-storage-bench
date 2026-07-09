@@ -35,7 +35,7 @@ fjall_3 = { version = "3.1.6", package = "fjall" }
 # unsafe-fastpath = mmap-reads + arena-memtable. Safe to enable since ondadb
 # 0db814d: the arena read iterator is now a lazy forward merge with a bounded
 # reverse fallback (the old one materialized the whole memtable per scan).
-ondadb = { git = "ssh://git@github.com/yannick/ondadb.git", branch = "perf/read-write-gaps", features = ["unsafe-fastpath"] }
+ondadb = { git = "ssh://git@github.com/yannick/ondadb.git", branch = "main", features = ["unsafe-fastpath"] }
 log = { version = "0.4.20", features = ["release_max_level_trace"] }
 rand = "0.8.5"
 redb = "4.1.0"
