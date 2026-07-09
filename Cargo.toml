@@ -32,7 +32,7 @@ fs_extra = "1.3.0"
 sketches-ddsketch = "0.3.0"
 heed = { version = "0.20.5", optional = true }
 fjall_3 = { version = "3.1.6", package = "fjall" }
-ondadb = { git = "ssh://git@github.com/yannick/ondadb.git", branch = "perf/read-write-gaps" }
+ondadb = { git = "ssh://git@github.com/yannick/ondadb.git", branch = "perf/read-write-gaps", features = ["unsafe-fastpath"] }
 log = { version = "0.4.20", features = ["release_max_level_trace"] }
 rand = "0.8.5"
 redb = "4.1.0"

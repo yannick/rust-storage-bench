@@ -414,8 +414,10 @@ impl DatabaseBuilder {
 
                 std::fs::create_dir_all(&path).unwrap();
 
-                let db = DB::open(Options::new(path.as_ref().to_string_lossy().into_owned()))
-                    .expect("open ondadb");
+                let mut opts = Options::new(path.as_ref().to_string_lossy().into_owned());
+                opts.block_cache_size = args.cache_size as usize;
+
+                let db = DB::open(opts).expect("open ondadb");
 
                 let cfg = ColumnFamilyConfig {
                     use_btree: matches!(args.backend, Backend::OndaBtree),
