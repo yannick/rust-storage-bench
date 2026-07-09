@@ -187,7 +187,10 @@ impl DatabaseBuilder {
 
                 let env = unsafe {
                     heed::EnvOpenOptions::new()
-                        .map_size(1_000_000_000_000)
+                        // LMDB requires the map size to be a multiple of the
+                        // system page size (16 KiB on Apple Silicon); 1 TiB as
+                        // a power of two is a multiple of any page size.
+                        .map_size(1 << 40)
                         // TODO: make LMDB NO_SYNC a separate option
                         // as this isn't equivalent to fsync=false for the
                         // other databases which treat it like "no sync commit"
