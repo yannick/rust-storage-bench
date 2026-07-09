@@ -32,7 +32,12 @@ fs_extra = "1.3.0"
 sketches-ddsketch = "0.3.0"
 heed = { version = "0.20.5", optional = true }
 fjall_3 = { version = "3.1.6", package = "fjall" }
-ondadb = { git = "ssh://git@github.com/yannick/ondadb.git", branch = "perf/read-write-gaps", features = ["unsafe-fastpath"] }
+# NOTE: do NOT add features = ["unsafe-fastpath"] here. That flag bundles two
+# opposite effects: mmap zero-copy SST reads (good — rw-random reads +64%) AND the
+# arena memtable, whose read iterator materializes+sorts the whole memtable per scan
+# (memtable.rs:480-483), regressing scans 50-1700x (queue 13k->52 range-ops/s).
+# Until ondaDB splits the feature (mmap-reads vs arena-memtable), keep the safe build.
+ondadb = { git = "ssh://git@github.com/yannick/ondadb.git", branch = "perf/read-write-gaps" }
 log = { version = "0.4.20", features = ["release_max_level_trace"] }
 rand = "0.8.5"
 redb = "4.1.0"
